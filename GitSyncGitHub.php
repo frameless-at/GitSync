@@ -651,6 +651,11 @@ class GitSyncGitHub {
             if ($name !== "{$moduleClass}.module" && $name !== "{$moduleClass}.module.php") {
                 continue;
             }
+            // Skip bundled copies in subdirectories (e.g. site/modules/...).
+            // In a proper module repo the .module file is at root level.
+            if (($item['path'] ?? '') !== $name) {
+                continue;
+            }
             $repo = $item['repository'] ?? [];
             $fullName = $repo['full_name'] ?? '';
             if (!empty($fullName) && !isset($seen[$fullName])) {
