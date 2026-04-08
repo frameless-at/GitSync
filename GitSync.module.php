@@ -123,15 +123,28 @@ class GitSync extends Process {
 
         // Public search — only if known-owner search found nothing
         if (empty($results)) {
+            // Code Search by filename (finds repos where name ≠ class name)
             try {
-                foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
+                foreach ($github->findPublicReposByModuleClass($moduleClass) as $sr) {
                     if (isset($seen[$sr['full_name']])) continue;
-                    if (!$github->repoHasModuleFile($sr['owner'], $sr['repo'], $moduleClass)) continue;
                     $seen[$sr['full_name']] = true;
                     $sr['module_class'] = $moduleClass;
                     $results[] = $sr;
                 }
             } catch (\Throwable $e) {}
+
+            // Repository Search as fallback (for repos not in Code Search index)
+            if (empty($results)) {
+                try {
+                    foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
+                        if (isset($seen[$sr['full_name']])) continue;
+                        if (!$github->repoHasModuleFile($sr['owner'], $sr['repo'], $moduleClass)) continue;
+                        $seen[$sr['full_name']] = true;
+                        $sr['module_class'] = $moduleClass;
+                        $results[] = $sr;
+                    }
+                } catch (\Throwable $e) {}
+            }
         }
 
         $this->indexModules($results);
