@@ -121,16 +121,18 @@ class GitSync extends Process {
             } catch (\Throwable $e) {}
         }
 
-        // Public search
-        try {
-            foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
-                if (!isset($seen[$sr['full_name']])) {
+        // Public search — only if known-owner search found nothing
+        if (empty($results)) {
+            try {
+                foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
+                    if (isset($seen[$sr['full_name']])) continue;
+                    if (!$github->repoHasModuleFile($sr['owner'], $sr['repo'], $moduleClass)) continue;
                     $seen[$sr['full_name']] = true;
                     $sr['module_class'] = $moduleClass;
                     $results[] = $sr;
                 }
-            }
-        } catch (\Throwable $e) {}
+            } catch (\Throwable $e) {}
+        }
 
         $this->indexModules($results);
         return $results;

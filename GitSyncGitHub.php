@@ -608,6 +608,10 @@ class GitSyncGitHub {
         $response = $this->apiRequest($url);
 
         foreach ($response['items'] ?? [] as $item) {
+            $name = $item['name'] ?? '';
+            if ($name !== "{$moduleClass}.module" && $name !== "{$moduleClass}.module.php") {
+                continue;
+            }
             $repo = $item['repository'] ?? [];
             if (!empty($repo['full_name'])) {
                 return [
@@ -621,6 +625,24 @@ class GitSyncGitHub {
         }
 
         return null;
+    }
+
+    /**
+     * Check whether a repository contains a ProcessWire module file.
+     *
+     * @param string $owner Repository owner
+     * @param string $repo Repository name
+     * @param string $moduleClass Module class name
+     * @return bool
+     */
+    public function repoHasModuleFile(string $owner, string $repo, string $moduleClass): bool {
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$moduleClass}.module.php";
+        $result = $this->apiRequestRaw($url);
+        if ($result['status'] === 200) return true;
+
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$moduleClass}.module";
+        $result = $this->apiRequestRaw($url);
+        return $result['status'] === 200;
     }
 
     /**
