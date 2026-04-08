@@ -65,18 +65,17 @@ The webhook only triggers a sync for modules that have an actively tracked branc
 
 ### Link an installed module
 
-Click **Link Module** on the GitSync overview page. Select a module from the dropdown – GitSync automatically searches GitHub for a matching repository. 
+Click **Link Module** on the GitSync overview page. Select a module from the dropdown – GitSync automatically searches GitHub for a matching repository. You can also enter a repository URL manually.
 
 ![Link Module](screenshots/link-module.png)
-
-You can also enter a repository URL manually.
-
-![Link Module](screenshots/link-missing-module.png)
 
 
 ### Install a new module from GitHub
 
 On the same page, expand **Install new module from GitHub** and paste the repository URL. GitSync downloads the module, installs it in ProcessWire, and links it automatically.
+
+![Link Module](screenshots/link-missing-module.png)
+
 
 ### Browse branches
 
