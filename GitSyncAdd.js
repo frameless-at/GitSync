@@ -14,11 +14,13 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
     this.changeLabel = changeLabel;
     this.labels = labels;
     this.onResearch = null;
+    this.lastResultCount = 0;
 
     if (this.btn) this.btn.closest('.Inputfield').classList.add('gitsync-hidden-btn');
 
     this.showResults = function(data) {
         self.reset();
+        self.lastResultCount = data.length;
         if (!data.length) {
             self.container.innerHTML = '<span style="color:#888">' + self.labels.noRepos + '</span>';
             return;
@@ -41,12 +43,18 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
 
     this.select = function(url) {
         self.hidden.value = url;
-        self.container.innerHTML = '<span style="color:#2e7d32"><i class="fa fa-check"></i> <a href="' + url + '" target="_blank" style="color:#2e7d32">' + url + '</a></span>'
-            + ' <a href="#" class="gitsync-change" style="margin-left:8px">' + self.changeLabel + '</a>';
-        self.container.querySelector('.gitsync-change').addEventListener('click', function(e) {
-            e.preventDefault();
-            if (self.onResearch) self.onResearch();
-        });
+        var html = '<span style="color:#2e7d32"><i class="fa fa-check"></i> <a href="' + url + '" target="_blank" style="color:#2e7d32">' + url + '</a></span>';
+        if (self.lastResultCount !== 1) {
+            html += ' <a href="#" class="gitsync-change" style="margin-left:8px">' + self.changeLabel + '</a>';
+        }
+        self.container.innerHTML = html;
+        var changeEl = self.container.querySelector('.gitsync-change');
+        if (changeEl) {
+            changeEl.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (self.onResearch) self.onResearch();
+            });
+        }
         if (self.btn) self.btn.closest('.Inputfield').classList.remove('gitsync-hidden-btn');
     };
 
