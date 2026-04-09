@@ -44,7 +44,7 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
     this.select = function(url) {
         self.hidden.value = url;
         var html = '<span style="color:#2e7d32"><i class="fa fa-check"></i> <a href="' + url + '" target="_blank" style="color:#2e7d32">' + url + '</a></span>';
-        if (self.lastResultCount !== 1) {
+        if (self.lastResultCount > 1) {
             html += ' <a href="#" class="gitsync-change" style="margin-left:8px">' + self.changeLabel + '</a>';
         }
         self.container.innerHTML = html;

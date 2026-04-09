@@ -75,15 +75,33 @@ class GitSync extends Process {
         $changed = false;
         foreach ($results as $result) {
             $mc = $result['module_class'] ?? '';
-            if (empty($mc) || isset($index[$mc])) continue;
-            $index[$mc] = [
+            if (empty($mc)) continue;
+            $entry = [
                 'full_name' => $result['full_name'],
                 'owner' => $result['owner'],
                 'repo' => $result['repo'],
                 'description' => $result['description'] ?? '',
                 'url' => $result['url'],
             ];
-            $changed = true;
+            // Migrate old single-entry format to array
+            if (isset($index[$mc]) && !is_array($index[$mc][0] ?? null)) {
+                $index[$mc] = [$index[$mc]];
+            }
+            if (!isset($index[$mc])) {
+                $index[$mc] = [];
+            }
+            // Avoid duplicates
+            $dominated = false;
+            foreach ($index[$mc] as $existing) {
+                if ($existing['full_name'] === $entry['full_name']) {
+                    $dominated = true;
+                    break;
+                }
+            }
+            if (!$dominated) {
+                $index[$mc][] = $entry;
+                $changed = true;
+            }
         }
         if ($changed) $this->saveModuleIndex($index);
     }
@@ -99,7 +117,12 @@ class GitSync extends Process {
     protected function searchGitHubRepos(string $moduleClass): array {
         $index = $this->getModuleIndex();
         if (isset($index[$moduleClass])) {
-            return [$index[$moduleClass]];
+            $cached = $index[$moduleClass];
+            // Migrate old single-entry format
+            if (!is_array($cached[0] ?? null)) {
+                $cached = [$cached];
+            }
+            return $cached;
         }
 
         $github = $this->getGitHub();
