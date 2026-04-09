@@ -25,6 +25,10 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
             self.container.innerHTML = '<span style="color:#888">' + self.labels.noRepos + '</span>';
             return;
         }
+        if (data.length === 1) {
+            self.select(data[0].url);
+            return;
+        }
         var html = '<div style="border:1px solid #ddd;border-radius:3px;max-height:300px;overflow-y:auto">';
         for (var i = 0; i < data.length; i++) {
             var r = data[i];
