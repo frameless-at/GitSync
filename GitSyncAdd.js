@@ -128,12 +128,15 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
     radios.forEach(function(r) { r.addEventListener('change', rebuildSelect); });
     rebuildSelect();
 
+    var searchCache = {};
+
     select.addEventListener('change', function() {
         var cls = select.value;
         picker.reset();
         if (!cls) return;
         var info = cfg.moduleData[cls];
         if (info && info.href) { picker.select(info.href); return; }
+        if (searchCache[cls]) { picker.showResults(searchCache[cls]); return; }
 
         picker.showSpinner();
         fetch(cfg.ajaxUrl + '&search=' + encodeURIComponent(cls), {
@@ -143,6 +146,7 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.error) { picker.showError(data.error); return; }
+            searchCache[cls] = data;
             picker.showResults(data);
         })
         .catch(function(err) { picker.showError(err.message); });
