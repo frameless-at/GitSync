@@ -1374,7 +1374,7 @@ class GitSync extends Process {
         if (preg_match('~github\.com/([^/]+)/([^/\s?#]+)~i', $url, $m)) {
             return [
                 'owner' => $m[1],
-                'repo' => rtrim($m[2], '.git'),
+                'repo' => preg_replace('/\.git$/', '', $m[2]),
             ];
         }
         return null;
