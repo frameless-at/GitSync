@@ -19,7 +19,7 @@ class GitSync extends Process {
         return [
             'title' => 'GitSync',
             'summary' => 'Synchronize installed ProcessWire modules with GitHub repository branches',
-            'version' => '0.1.1',
+            'version' => '0.1.2',
             'author' => 'frameless Media',
             'href' => 'https://github.com/frameless-at/gitsync',
             'requires' => 'ProcessWire>=3.0.0',
