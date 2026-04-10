@@ -370,8 +370,8 @@ class GitSync extends Process {
                 sprintf('<a href="%s">%s</a>',
                     $modules->getModuleEditUrl($this),
                     $this->_('Configure token')
-                )
-            );
+                ), 
+            Notice::allowMarkup);
         }
 
         // Check write permissions on site/modules/
