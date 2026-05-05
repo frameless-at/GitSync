@@ -19,7 +19,7 @@ class GitSync extends Process {
         return [
             'title' => 'GitSync',
             'summary' => 'Synchronize installed ProcessWire modules with GitHub repository branches',
-            'version' => '0.1.0',
+            'version' => '0.1.2',
             'author' => 'frameless Media',
             'href' => 'https://github.com/frameless-at/gitsync',
             'requires' => 'ProcessWire>=3.0.0',
@@ -75,15 +75,33 @@ class GitSync extends Process {
         $changed = false;
         foreach ($results as $result) {
             $mc = $result['module_class'] ?? '';
-            if (empty($mc) || isset($index[$mc])) continue;
-            $index[$mc] = [
+            if (empty($mc)) continue;
+            $entry = [
                 'full_name' => $result['full_name'],
                 'owner' => $result['owner'],
                 'repo' => $result['repo'],
                 'description' => $result['description'] ?? '',
                 'url' => $result['url'],
             ];
-            $changed = true;
+            // Migrate old single-entry format to array
+            if (isset($index[$mc]) && !is_array($index[$mc][0] ?? null)) {
+                $index[$mc] = [$index[$mc]];
+            }
+            if (!isset($index[$mc])) {
+                $index[$mc] = [];
+            }
+            // Avoid duplicates
+            $dominated = false;
+            foreach ($index[$mc] as $existing) {
+                if ($existing['full_name'] === $entry['full_name']) {
+                    $dominated = true;
+                    break;
+                }
+            }
+            if (!$dominated) {
+                $index[$mc][] = $entry;
+                $changed = true;
+            }
         }
         if ($changed) $this->saveModuleIndex($index);
     }
@@ -99,7 +117,12 @@ class GitSync extends Process {
     protected function searchGitHubRepos(string $moduleClass): array {
         $index = $this->getModuleIndex();
         if (isset($index[$moduleClass])) {
-            return [$index[$moduleClass]];
+            $cached = $index[$moduleClass];
+            // Migrate old single-entry format
+            if (!is_array($cached[0] ?? null)) {
+                $cached = [$cached];
+            }
+            return $cached;
         }
 
         $github = $this->getGitHub();
@@ -121,16 +144,31 @@ class GitSync extends Process {
             } catch (\Throwable $e) {}
         }
 
-        // Public search
-        try {
-            foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
-                if (!isset($seen[$sr['full_name']])) {
+        // Public search — only if known-owner search found nothing
+        if (empty($results)) {
+            // Code Search by filename (finds repos where name ≠ class name)
+            try {
+                foreach ($github->findPublicReposByModuleClass($moduleClass) as $sr) {
+                    if (isset($seen[$sr['full_name']])) continue;
                     $seen[$sr['full_name']] = true;
                     $sr['module_class'] = $moduleClass;
                     $results[] = $sr;
                 }
+            } catch (\Throwable $e) {}
+
+            // Repository Search as fallback (for repos not in Code Search index)
+            if (empty($results)) {
+                try {
+                    foreach ($github->searchRepositories($moduleClass, 8) as $sr) {
+                        if (isset($seen[$sr['full_name']])) continue;
+                        if (!$github->repoHasModuleFile($sr['owner'], $sr['repo'], $moduleClass)) continue;
+                        $seen[$sr['full_name']] = true;
+                        $sr['module_class'] = $moduleClass;
+                        $results[] = $sr;
+                    }
+                } catch (\Throwable $e) {}
             }
-        } catch (\Throwable $e) {}
+        }
 
         $this->indexModules($results);
         return $results;
@@ -332,8 +370,8 @@ class GitSync extends Process {
                 sprintf('<a href="%s">%s</a>',
                     $modules->getModuleEditUrl($this),
                     $this->_('Configure token')
-                )
-            );
+                ), 
+            Notice::allowMarkup);
         }
 
         // Check write permissions on site/modules/
@@ -974,7 +1012,9 @@ class GitSync extends Process {
                     $this->wire('sanitizer')->entities($csrfValue),
                     $id,
                     $this->wire('sanitizer')->entities($branch['name']),
-                    sprintf($this->_('Sync branch %s to module %s?'), $branch['name'], $repo['module_class']),
+                    $this->wire('sanitizer')->entities(
+                        sprintf($this->_('Sync branch %s to module %s?'), $branch['name'], $repo['module_class'])
+                    ),
                     $formId,
                     $this->_('Sync')
                 );
@@ -1336,7 +1376,7 @@ class GitSync extends Process {
         if (preg_match('~github\.com/([^/]+)/([^/\s?#]+)~i', $url, $m)) {
             return [
                 'owner' => $m[1],
-                'repo' => rtrim($m[2], '.git'),
+                'repo' => preg_replace('/\.git$/', '', $m[2]),
             ];
         }
         return null;

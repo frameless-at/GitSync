@@ -608,6 +608,10 @@ class GitSyncGitHub {
         $response = $this->apiRequest($url);
 
         foreach ($response['items'] ?? [] as $item) {
+            $name = $item['name'] ?? '';
+            if ($name !== "{$moduleClass}.module" && $name !== "{$moduleClass}.module.php") {
+                continue;
+            }
             $repo = $item['repository'] ?? [];
             if (!empty($repo['full_name'])) {
                 return [
@@ -621,6 +625,70 @@ class GitSyncGitHub {
         }
 
         return null;
+    }
+
+    /**
+     * Public Code Search for a PW module by its exact filename.
+     *
+     * Finds repos where the repo name differs from the module class name
+     * (e.g. repo "VideoOrSocialPostEmbed" containing
+     * "TextformatterVideoOrSocialPostEmbed.module").
+     *
+     * @param string $moduleClass Module class name
+     * @param int $limit Max results from API
+     * @return array Array of repo info arrays
+     * @throws GitSyncException
+     */
+    public function findPublicReposByModuleClass(string $moduleClass, int $limit = 5): array {
+        $q = "filename:{$moduleClass}.module";
+        $url = 'https://api.github.com/search/code?q=' . urlencode($q) . '&per_page=' . $limit;
+        $response = $this->apiRequest($url);
+
+        $results = [];
+        $seen = [];
+        foreach ($response['items'] ?? [] as $item) {
+            $name = $item['name'] ?? '';
+            if ($name !== "{$moduleClass}.module" && $name !== "{$moduleClass}.module.php") {
+                continue;
+            }
+            // Skip bundled copies in subdirectories (e.g. site/modules/...).
+            // In a proper module repo the .module file is at root level.
+            if (($item['path'] ?? '') !== $name) {
+                continue;
+            }
+            $repo = $item['repository'] ?? [];
+            $fullName = $repo['full_name'] ?? '';
+            if (!empty($fullName) && !isset($seen[$fullName])) {
+                $seen[$fullName] = true;
+                $results[] = [
+                    'full_name' => $fullName,
+                    'owner' => $repo['owner']['login'] ?? '',
+                    'repo' => $repo['name'] ?? '',
+                    'description' => $repo['description'] ?? '',
+                    'url' => $repo['html_url'] ?? '',
+                ];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Check whether a repository contains a ProcessWire module file.
+     *
+     * @param string $owner Repository owner
+     * @param string $repo Repository name
+     * @param string $moduleClass Module class name
+     * @return bool
+     */
+    public function repoHasModuleFile(string $owner, string $repo, string $moduleClass): bool {
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$moduleClass}.module.php";
+        $result = $this->apiRequestRaw($url);
+        if ($result['status'] === 200) return true;
+
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$moduleClass}.module";
+        $result = $this->apiRequestRaw($url);
+        return $result['status'] === 200;
     }
 
     /**

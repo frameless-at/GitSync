@@ -14,13 +14,19 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
     this.changeLabel = changeLabel;
     this.labels = labels;
     this.onResearch = null;
+    this.lastResultCount = 0;
 
     if (this.btn) this.btn.closest('.Inputfield').classList.add('gitsync-hidden-btn');
 
     this.showResults = function(data) {
         self.reset();
+        self.lastResultCount = data.length;
         if (!data.length) {
             self.container.innerHTML = '<span style="color:#888">' + self.labels.noRepos + '</span>';
+            return;
+        }
+        if (data.length === 1) {
+            self.select(data[0].url);
             return;
         }
         var html = '<div style="border:1px solid #ddd;border-radius:3px;max-height:300px;overflow-y:auto">';
@@ -41,12 +47,18 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
 
     this.select = function(url) {
         self.hidden.value = url;
-        self.container.innerHTML = '<span style="color:#2e7d32"><i class="fa fa-check"></i> <a href="' + url + '" target="_blank" style="color:#2e7d32">' + url + '</a></span>'
-            + ' <a href="#" class="gitsync-change" style="margin-left:8px">' + self.changeLabel + '</a>';
-        self.container.querySelector('.gitsync-change').addEventListener('click', function(e) {
-            e.preventDefault();
-            if (self.onResearch) self.onResearch();
-        });
+        var html = '<span style="color:#2e7d32"><i class="fa fa-check"></i> <a href="' + url + '" target="_blank" style="color:#2e7d32">' + url + '</a></span>';
+        if (self.lastResultCount > 1) {
+            html += ' <a href="#" class="gitsync-change" style="margin-left:8px">' + self.changeLabel + '</a>';
+        }
+        self.container.innerHTML = html;
+        var changeEl = self.container.querySelector('.gitsync-change');
+        if (changeEl) {
+            changeEl.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (self.onResearch) self.onResearch();
+            });
+        }
         if (self.btn) self.btn.closest('.Inputfield').classList.remove('gitsync-hidden-btn');
     };
 
@@ -116,12 +128,15 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
     radios.forEach(function(r) { r.addEventListener('change', rebuildSelect); });
     rebuildSelect();
 
+    var searchCache = {};
+
     select.addEventListener('change', function() {
         var cls = select.value;
         picker.reset();
         if (!cls) return;
         var info = cfg.moduleData[cls];
         if (info && info.href) { picker.select(info.href); return; }
+        if (searchCache[cls]) { picker.showResults(searchCache[cls]); return; }
 
         picker.showSpinner();
         fetch(cfg.ajaxUrl + '&search=' + encodeURIComponent(cls), {
@@ -131,6 +146,7 @@ function GitSyncPicker(container, hiddenInput, submitBtn, changeLabel, labels) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.error) { picker.showError(data.error); return; }
+            searchCache[cls] = data;
             picker.showResults(data);
         })
         .catch(function(err) { picker.showError(err.message); });
