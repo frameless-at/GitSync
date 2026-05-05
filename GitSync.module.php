@@ -1013,7 +1013,7 @@ class GitSync extends Process {
                     $id,
                     $this->wire('sanitizer')->entities($branch['name']),
                     $this->wire('sanitizer')->entities(
-                        sprintf($this->_('Sync branch "%s" to module "%s"?'), $branch['name'], $repo['module_class'])
+                        sprintf($this->_('Sync branch %s to module %s?'), $branch['name'], $repo['module_class'])
                     ),
                     $formId,
                     $this->_('Sync')
