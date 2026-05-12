@@ -113,7 +113,6 @@ class GitSyncGitHub {
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
 
         if ($response === false) {
             throw new GitSyncException("GitHub API request failed: {$error}");
@@ -157,7 +156,6 @@ class GitSyncGitHub {
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         return [
             'status' => (int) $httpCode,
@@ -330,7 +328,6 @@ class GitSyncGitHub {
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
 
         if ($response === false) {
             throw new GitSyncException("Failed to download blob {$sha}: {$error}");

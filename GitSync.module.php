@@ -22,7 +22,7 @@ class GitSync extends Process {
             'version' => '0.2.0',
             'author' => 'frameless Media',
             'href' => 'https://github.com/frameless-at/gitsync',
-            'requires' => 'ProcessWire>=3.0.0',
+            'requires' => 'ProcessWire>=3.0.0, PHP>=8.0.0',
             'icon' => 'github',
             'permission' => 'gitsync',
             'permissions' => [

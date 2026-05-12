@@ -20,7 +20,7 @@ ProcessWire module that synchronizes installed modules with GitHub repository br
 ## Requirements
 
 - ProcessWire >= 3.0
-- PHP >= 7.4
+- PHP >= 8.0
 - PHP cURL extension
 
 ## Installation
