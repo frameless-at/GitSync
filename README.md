@@ -22,6 +22,7 @@ ProcessWire module that synchronizes installed modules with GitHub repository br
 - ProcessWire >= 3.0
 - PHP >= 8.0
 - PHP cURL extension
+- PHP ZipArchive extension (used by **Install from GitHub** — ProcessWire core requires it as well)
 
 ## Installation
 
@@ -73,7 +74,7 @@ Click **Link Module** on the GitSync overview page. Select a module from the dro
 
 ### Install a new module from GitHub
 
-On the same page, expand **Install new module from GitHub** and paste the repository URL. GitSync downloads the module, installs it in ProcessWire, and links it automatically.
+On the same page, expand **Install new module from GitHub** and paste the repository URL. GitSync downloads the module's default branch as a single ZIP archive (one HTTPS request, regardless of file count), extracts it into `site/modules/`, installs it in ProcessWire, and links it automatically. Subsequent **Sync** operations on the linked module then use the differential sync described below.
 
 ![Link Module](screenshots/link-missing-module.png)
 

@@ -841,23 +841,7 @@ class GitSync extends Process {
             $downloaded = 0;
 
             if (!$alreadyExists) {
-                $remoteTree = $github->getTree($owner, $repoName, $defaultBranch);
-                $this->wire('files')->mkdir($targetDir, true);
-
-                foreach ($remoteTree as $entry) {
-                    if ($entry['type'] !== 'blob') continue;
-                    if (strpos($entry['path'], '..') !== false || $entry['path'][0] === '/') continue;
-
-                    $filePath = $targetDir . $entry['path'];
-                    $fileDir = dirname($filePath);
-                    if (!is_dir($fileDir)) {
-                        $this->wire('files')->mkdir($fileDir, true);
-                    }
-
-                    $content = $github->downloadBlob($owner, $repoName, $entry['sha']);
-                    file_put_contents($filePath, $content);
-                    $downloaded++;
-                }
+                $downloaded = $this->downloadAndExtractZipball($github, $owner, $repoName, $defaultBranch, $targetDir);
             }
 
             if (!$alreadyExists) {
@@ -1453,6 +1437,63 @@ class GitSync extends Process {
     // =========================================================================
     // Helper Methods
     // =========================================================================
+
+    /**
+     * Download a branch as a ZIP archive and extract it into the target module directory.
+     *
+     * Uses GitHub's /zipball endpoint — a single HTTPS request for the whole repo
+     * instead of one API call per file. The wrapper-dir strip pattern matches
+     * Ryan Cramer's ProcessWireUpgrade module (uses $files[0] from wireUnzipFile).
+     *
+     * @return int Number of files extracted (for the user-facing summary message)
+     * @throws GitSyncException
+     */
+    protected function downloadAndExtractZipball(GitSyncGitHub $github, string $owner, string $repo, string $branch, string $targetDir): int {
+        $cachePath = $this->wire('config')->paths->cache . 'GitSync/';
+        if (!is_dir($cachePath)) {
+            $this->wire('files')->mkdir($cachePath, true);
+        }
+        $tempDir = $cachePath . 'install-' . uniqid('', true) . '/';
+        $this->wire('files')->mkdir($tempDir, true);
+        $zipFile = $tempDir . 'archive.zip';
+
+        try {
+            $github->downloadZipball($owner, $repo, $branch, $zipFile);
+
+            $files = wireUnzipFile($zipFile, $tempDir);
+            if (empty($files)) {
+                throw new GitSyncException('Downloaded archive was empty or could not be extracted.');
+            }
+
+            // GitHub wraps archive contents in a single top-level directory like
+            // "{owner}-{repo}-{shortsha}/". $files[0] may be that directory itself
+            // or a path inside it — take everything before the first slash either way.
+            $first = trim($files[0], '/');
+            $slashPos = strpos($first, '/');
+            $wrapper = $slashPos !== false ? substr($first, 0, $slashPos) : $first;
+            $wrapperPath = $tempDir . $wrapper;
+            if (!is_dir($wrapperPath)) {
+                throw new GitSyncException('Unexpected archive layout: top-level directory not found.');
+            }
+
+            if (!rename($wrapperPath, rtrim($targetDir, '/'))) {
+                throw new GitSyncException("Failed to move extracted module into {$targetDir}");
+            }
+
+            $count = 0;
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($targetDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::LEAVES_ONLY
+            );
+            foreach ($iterator as $file) {
+                if ($file->isFile()) $count++;
+            }
+            return $count;
+        } finally {
+            if (is_file($zipFile)) @unlink($zipFile);
+            if (is_dir($tempDir)) wireRmdir($tempDir, true);
+        }
+    }
 
     /**
      * Build a map of local files with their git blob SHAs

@@ -340,6 +340,51 @@ class GitSyncGitHub {
         return $response;
     }
 
+    /**
+     * Download a repository branch as a ZIP archive (single request).
+     *
+     * Uses GitHub's /zipball/{ref} endpoint, which redirects to a CDN-served
+     * archive. The response is streamed directly to disk to avoid loading
+     * potentially large archives into memory.
+     *
+     * @param string $owner Repository owner
+     * @param string $repo Repository name
+     * @param string $ref Branch name, tag, or commit SHA
+     * @param string $destPath Absolute path where the ZIP should be written
+     * @throws GitSyncException
+     */
+    public function downloadZipball(string $owner, string $repo, string $ref, string $destPath): void {
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/zipball/" . urlencode($ref);
+
+        $fp = fopen($destPath, 'wb');
+        if ($fp === false) {
+            throw new GitSyncException("Cannot open file for writing: {$destPath}");
+        }
+
+        // No Accept override — the zipball endpoint streams a binary ZIP regardless.
+        // Longer timeout: archives for large repos can take time on first request.
+        $ch = $this->buildCurlHandle($url, [], [
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_FILE => $fp,
+            CURLOPT_TIMEOUT => 300,
+        ]);
+
+        $success = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        fclose($fp);
+
+        if ($success === false) {
+            @unlink($destPath);
+            throw new GitSyncException("Failed to download archive for {$owner}/{$repo}@{$ref}: {$error}");
+        }
+
+        if ($httpCode < 200 || $httpCode >= 300) {
+            @unlink($destPath);
+            throw new GitSyncException("GitHub returned HTTP {$httpCode} when downloading archive for {$owner}/{$repo}@{$ref}");
+        }
+    }
+
     // =========================================================================
     // Repository discovery & resolution
     // =========================================================================
