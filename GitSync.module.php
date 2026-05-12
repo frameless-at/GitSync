@@ -443,30 +443,6 @@ class GitSync extends Process {
         return $repos[$id] ?? null;
     }
 
-    /**
-     * Resolve the actual install directory for a module class.
-     *
-     * For multi-module repositories like TracyDebugger (which ships
-     * ProcessTracyAdminer, ProcessTracyAdminerRenderer, etc. as siblings
-     * in the same folder), the install directory does not match the
-     * conventional site/modules/{ModuleClass}/ path. Asking ProcessWire
-     * directly returns the real location and prevents the sync from
-     * writing the entire repo into a wrong, duplicated directory.
-     *
-     * Falls back to the conventional path when the module isn't installed
-     * yet (e.g. fresh "Install from GitHub" flow).
-     */
-    protected function resolveModuleTargetDir(string $moduleClass): string {
-        $modules = $this->wire('modules');
-        if ($modules->isInstalled($moduleClass) || $modules->isInstallable($moduleClass)) {
-            $file = $modules->getModuleFile($moduleClass);
-            if ($file && is_file($file)) {
-                return rtrim(dirname($file), '/') . '/';
-            }
-        }
-        return $this->wire('config')->paths->siteModules . $moduleClass . '/';
-    }
-
     // =========================================================================
     // Admin Page: Module List (default view)
     // =========================================================================
@@ -745,6 +721,18 @@ class GitSync extends Process {
             $modulePath = $modules->getModuleFile($module);
             $isCore = strpos($modulePath, $this->wire('config')->paths->wire) === 0;
 
+            // Skip sub-modules of multi-module repos (e.g. ProcessTracyAdminer, which
+            // lives inside the TracyDebugger directory). Only "primary" modules — those
+            // whose file resides in a folder named after the class, or directly in
+            // site/modules/ — should be linkable. This mirrors how modules.processwire.com
+            // exposes only primary modules to ProcessWireUpgrade.
+            if (!$isCore) {
+                $parentDir = rtrim(dirname($modulePath), '/');
+                $siteModulesDir = rtrim($this->wire('config')->paths->siteModules, '/');
+                $isPrimary = (basename($parentDir) === $className) || ($parentDir === $siteModulesDir);
+                if (!$isPrimary) continue;
+            }
+
             $entry = [
                 'title' => $info['title'] ?? $className,
                 'author' => $info['author'] ?? '',
@@ -801,24 +789,7 @@ class GitSync extends Process {
             return '';
         }
 
-        // Reject linking when the module shares its install directory with another
-        // linked module (multi-module repos like TracyDebugger). Syncing would
-        // otherwise write the entire repo into a wrongly-derived sibling directory.
         $repos = $this->getModuleRepos();
-        $targetDir = rtrim($this->resolveModuleTargetDir($moduleClass), '/');
-        foreach ($repos as $existing) {
-            if ($existing['module_class'] === $moduleClass) continue;
-            $existingDir = rtrim($this->resolveModuleTargetDir($existing['module_class']), '/');
-            if ($existingDir === $targetDir) {
-                $this->error(sprintf(
-                    $this->_('Cannot link "%1$s": it shares its install directory with "%2$s", which is already linked to %3$s/%4$s. Multi-module repositories ship several modules in the same folder — link only one of them; the siblings are kept up to date automatically.'),
-                    $moduleClass, $existing['module_class'], $existing['owner'], $existing['repo']
-                ));
-                $this->wire('session')->redirect('./');
-                return '';
-            }
-        }
-
         $repos[] = [
             'module_class' => $moduleClass,
             'owner' => $owner,
@@ -1345,7 +1316,7 @@ class GitSync extends Process {
      */
     public function performSync(int $id, array $repo, string $branch, string $source = 'manual'): array {
         $moduleClass = $repo['module_class'];
-        $targetDir = $this->resolveModuleTargetDir($moduleClass);
+        $targetDir = $this->wire('config')->paths->siteModules . $moduleClass . '/';
 
         // 1. Check write permissions
         $this->checkWritePermissions($targetDir);
