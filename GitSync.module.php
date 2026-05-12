@@ -19,7 +19,7 @@ class GitSync extends Process {
         return [
             'title' => 'GitSync',
             'summary' => 'Synchronize installed ProcessWire modules with GitHub repository branches',
-            'version' => '0.1.3',
+            'version' => '0.2.0',
             'author' => 'frameless Media',
             'href' => 'https://github.com/frameless-at/gitsync',
             'requires' => 'ProcessWire>=3.0.0',
@@ -187,6 +187,82 @@ class GitSync extends Process {
         parent::init();
         if (!empty($this->webhook_secret)) {
             $this->checkWebhookRequest();
+        }
+    }
+
+    /**
+     * Called after API is ready. Runs the per-session auto-check for repos
+     * configured with auto_sync_mode = notify|sync.
+     */
+    public function ready() {
+        $user = $this->wire('user');
+        if (!$user->isLoggedin()) return;
+        if (!$user->hasPermission('gitsync')) return;
+
+        $page = $this->wire('page');
+        if (!$page || !$page->template || $page->template->name !== 'admin') return;
+
+        $session = $this->wire('session');
+        if ($session->get('GitSync_autocheck_done')) return;
+        $session->set('GitSync_autocheck_done', true);
+
+        $this->runAutoCheck();
+    }
+
+    /**
+     * Check each registered repo for upstream updates and either notify or auto-sync,
+     * based on the per-repo auto_sync_mode setting.
+     */
+    protected function runAutoCheck(): void {
+        $repos = $this->getModuleRepos();
+        if (empty($repos)) return;
+
+        $session = $this->wire('session');
+        $log = $this->wire('log');
+        $adminUrl = $this->wire('config')->urls->admin;
+
+        foreach ($repos as $id => $repo) {
+            $mode = $repo['auto_sync_mode'] ?? 'off';
+            if ($mode === 'off') continue;
+            if (!empty($repo['webhook_active'])) continue;
+            if ($repo['module_class'] === 'GitSync') continue;
+            if (empty($repo['current_branch'])) continue;
+
+            try {
+                $branchInfo = $this->getGitHub()->getBranch($repo['owner'], $repo['repo'], $repo['current_branch']);
+                $remoteSha = $branchInfo['sha'];
+                $localSha = $repo['last_commit_sha'] ?? '';
+                if ($remoteSha === $localSha) continue;
+
+                if ($mode === 'sync') {
+                    try {
+                        $result = $this->performSync($id, $repo, $repo['current_branch'], 'auto-sync');
+                        if ($result['status'] === 'synced') {
+                            $session->message(sprintf(
+                                $this->_('GitSync: auto-synced "%1$s" to branch "%2$s" (commit %3$s) – %4$d updated, %5$d deleted.'),
+                                $repo['module_class'], $repo['current_branch'], $result['sha'],
+                                $result['updated'], $result['deleted']
+                            ));
+                        }
+                    } catch (\Throwable $e) {
+                        $session->error(sprintf(
+                            $this->_('GitSync: auto-sync failed for "%1$s": %2$s'),
+                            $repo['module_class'], $e->getMessage()
+                        ));
+                        $log->save('gitsync', "[auto-check] Sync FAILED for {$repo['module_class']}: " . $e->getMessage());
+                    }
+                } else {
+                    $branchesUrl = $adminUrl . 'setup/gitsync/branches/?id=' . $id;
+                    $session->message(sprintf(
+                        $this->_('GitSync: update available for "%1$s" on branch "%2$s" – <a href="%3$s">view branches</a>'),
+                        $this->wire('sanitizer')->entities($repo['module_class']),
+                        $this->wire('sanitizer')->entities($repo['current_branch']),
+                        $branchesUrl
+                    ), Notice::allowMarkup);
+                }
+            } catch (\Throwable $e) {
+                $log->save('gitsync', "[auto-check] Check FAILED for {$repo['module_class']}: " . $e->getMessage());
+            }
         }
     }
 
@@ -395,15 +471,20 @@ class GitSync extends Process {
             $this->_('Repository'),
             $this->_('Branch'),
             $this->_('Last Synced'),
+            $this->_('Auto-Sync'),
             $this->_('Actions'),
         ]);
 
         if (empty($repos)) {
             $table->row([
                 $this->_('No modules registered yet. Click "Link Module" to get started.'),
-                '', '', '', ''
+                '', '', '', '', ''
             ]);
         }
+
+        $csrfName = $this->wire('session')->CSRF->getTokenName();
+        $csrfValue = $this->wire('session')->CSRF->getTokenValue();
+        $sanitizer = $this->wire('sanitizer');
 
         foreach ($repos as $id => $repo) {
             $repoUrl = "https://github.com/{$repo['owner']}/{$repo['repo']}";
@@ -429,11 +510,51 @@ class GitSync extends Process {
 
             $moduleEditUrl = $modules->getModuleEditUrl($repo['module_class']);
 
+            // Auto-sync mode dropdown — disabled for GitSync self and webhook-active repos
+            $currentMode = $repo['auto_sync_mode'] ?? 'off';
+            $disableReason = '';
+            if ($repo['module_class'] === 'GitSync') {
+                $disableReason = $this->_('Self-update only manual');
+            } elseif (!empty($repo['webhook_active'])) {
+                $disableReason = $this->_('Webhook active');
+            } elseif (empty($repo['current_branch'])) {
+                $disableReason = $this->_('No branch selected');
+            }
+
+            if ($disableReason) {
+                $autoSyncCell = "<span class='uk-text-muted'>—</span> <small class='uk-text-muted'>{$sanitizer->entities($disableReason)}</small>";
+            } else {
+                $options = [
+                    'off' => $this->_('off'),
+                    'notify' => $this->_('notify'),
+                    'sync' => $this->_('auto-sync'),
+                ];
+                $optsHtml = '';
+                foreach ($options as $val => $label) {
+                    $sel = ($val === $currentMode) ? ' selected' : '';
+                    $optsHtml .= "<option value='{$val}'{$sel}>{$sanitizer->entities($label)}</option>";
+                }
+                $formId = 'gitsync-automode-' . $id;
+                $autoSyncCell = sprintf(
+                    '<form method="post" action="./automode/" style="display:inline" id="%s">'
+                    . '<input type="hidden" name="%s" value="%s">'
+                    . '<input type="hidden" name="id" value="%d">'
+                    . '<select name="mode" onchange="this.form.submit()">%s</select>'
+                    . '</form>',
+                    $formId,
+                    $sanitizer->entities($csrfName),
+                    $sanitizer->entities($csrfValue),
+                    $id,
+                    $optsHtml
+                );
+            }
+
             $table->row([
-                "<a href='{$moduleEditUrl}'><strong>{$this->wire('sanitizer')->entities($repo['module_class'])}</strong></a>",
-                "<a href='{$repoUrl}' target='_blank'>{$this->wire('sanitizer')->entities($repo['owner'])}/{$this->wire('sanitizer')->entities($repo['repo'])}</a>",
-                $this->wire('sanitizer')->entities($branchLabel) . $webhookBadge,
+                "<a href='{$moduleEditUrl}'><strong>{$sanitizer->entities($repo['module_class'])}</strong></a>",
+                "<a href='{$repoUrl}' target='_blank'>{$sanitizer->entities($repo['owner'])}/{$sanitizer->entities($repo['repo'])}</a>",
+                $sanitizer->entities($branchLabel) . $webhookBadge,
                 $lastSynced,
+                $autoSyncCell,
                 $actions,
             ]);
         }
@@ -925,6 +1046,53 @@ class GitSync extends Process {
         $this->invalidateSearchCache();
 
         $this->message(sprintf($this->_('Module "%s" removed from GitSync.'), $repo['module_class']));
+        $this->wire('session')->redirect('../');
+        return '';
+    }
+
+    // =========================================================================
+    // Admin Page: Set Auto-Sync Mode (POST only)
+    // =========================================================================
+
+    /**
+     * Update the auto_sync_mode for a repo mapping
+     */
+    public function ___executeAutoMode(): string {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->wire('session')->redirect('../');
+            return '';
+        }
+
+        $this->wire('session')->CSRF->validate();
+
+        $id = (int)$this->wire('input')->post('id');
+        $mode = (string)$this->wire('input')->post('mode');
+
+        if (!in_array($mode, ['off', 'notify', 'sync'], true)) {
+            $this->error($this->_('Invalid auto-sync mode.'));
+            $this->wire('session')->redirect('../');
+            return '';
+        }
+
+        $repos = $this->getModuleRepos();
+        if (!isset($repos[$id])) {
+            $this->error($this->_('Module mapping not found.'));
+            $this->wire('session')->redirect('../');
+            return '';
+        }
+
+        $repos[$id]['auto_sync_mode'] = $mode;
+        $this->saveModuleRepos($repos);
+
+        $labels = [
+            'off' => $this->_('off'),
+            'notify' => $this->_('notify'),
+            'sync' => $this->_('auto-sync'),
+        ];
+        $this->message(sprintf(
+            $this->_('Auto-sync for "%1$s" set to: %2$s'),
+            $repos[$id]['module_class'], $labels[$mode]
+        ));
         $this->wire('session')->redirect('../');
         return '';
     }
