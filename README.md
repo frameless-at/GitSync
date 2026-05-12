@@ -94,6 +94,8 @@ Each linked module has an **Auto-Sync** column in the overview with three modes:
 - **notify** – check for new commits and show a warning notice with a link to the branches view
 - **auto-sync** – check and sync immediately without confirmation
 
+![Update available](screenshots/warning.png)
+
 When an update is detected, an orange **update available** badge stays on the GitSync overview next to the affected module, even after the notice is dismissed.
 
 Notes:
