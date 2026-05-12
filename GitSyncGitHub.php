@@ -626,13 +626,22 @@ class GitSyncGitHub {
         $url = "https://api.github.com/repos/{$owner}/{$repo}/git/trees/{$treeSha}";
         $response = $this->apiRequest($url);
 
+        $candidates = [];
         foreach ($response['tree'] as $entry) {
             if ($entry['type'] === 'blob' && preg_match('/^(\w+)\.module(?:\.php)?$/', $entry['path'], $m)) {
-                return $m[1];
+                $candidates[] = $m[1];
             }
         }
 
-        return null;
+        if (empty($candidates)) return null;
+
+        // Multi-module repos (e.g. TracyDebugger ships ProcessTracyAdminer alongside)
+        // can list several .module(.php) files at the root. The "main" module is the
+        // one whose class matches the repository name — prefer that to keep the install
+        // folder consistent with PW conventions.
+        if (in_array($repo, $candidates, true)) return $repo;
+
+        return $candidates[0];
     }
 
     /**
