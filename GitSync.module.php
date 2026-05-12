@@ -266,7 +266,7 @@ class GitSync extends Process {
                 } else {
                     $branchesUrl = $adminUrl . 'setup/gitsync/branches/?id=' . $id;
                     $this->warning(sprintf(
-                        $this->_('Update available for "%1$s" on branch "%2$s" – [view branches](%3$s)'),
+                        $this->_('Update available for **%1$s** on branch **%2$s** – [view branches](%3$s)'),
                         $repo['module_class'], $repo['current_branch'], $branchesUrl
                     ), Notice::allowMarkdown);
                 }
