@@ -217,9 +217,12 @@ class GitSync extends Process {
         $repos = $this->getModuleRepos();
         if (empty($repos)) return;
 
-        $session = $this->wire('session');
         $log = $this->wire('log');
         $adminUrl = $this->wire('config')->urls->admin;
+        $sanitizer = $this->wire('sanitizer');
+
+        $repos = $this->getModuleRepos();
+        $dirty = false;
 
         foreach ($repos as $id => $repo) {
             $mode = $repo['auto_sync_mode'] ?? 'off';
@@ -232,20 +235,29 @@ class GitSync extends Process {
                 $branchInfo = $this->getGitHub()->getBranch($repo['owner'], $repo['repo'], $repo['current_branch']);
                 $remoteSha = $branchInfo['sha'];
                 $localSha = $repo['last_commit_sha'] ?? '';
+
+                $repos[$id]['latest_remote_sha'] = $remoteSha;
+                $repos[$id]['auto_sync_last_check'] = date('c');
+                $dirty = true;
+
                 if ($remoteSha === $localSha) continue;
 
                 if ($mode === 'sync') {
                     try {
                         $result = $this->performSync($id, $repo, $repo['current_branch'], 'auto-sync');
                         if ($result['status'] === 'synced') {
-                            $session->message(sprintf(
+                            // performSync rewrites the mapping, so reload to keep our pending fields
+                            $repos = $this->getModuleRepos();
+                            $repos[$id]['latest_remote_sha'] = $remoteSha;
+                            $repos[$id]['auto_sync_last_check'] = date('c');
+                            $this->message(sprintf(
                                 $this->_('GitSync: auto-synced "%1$s" to branch "%2$s" (commit %3$s) – %4$d updated, %5$d deleted.'),
                                 $repo['module_class'], $repo['current_branch'], $result['sha'],
                                 $result['updated'], $result['deleted']
                             ));
                         }
                     } catch (\Throwable $e) {
-                        $session->error(sprintf(
+                        $this->error(sprintf(
                             $this->_('GitSync: auto-sync failed for "%1$s": %2$s'),
                             $repo['module_class'], $e->getMessage()
                         ));
@@ -253,16 +265,20 @@ class GitSync extends Process {
                     }
                 } else {
                     $branchesUrl = $adminUrl . 'setup/gitsync/branches/?id=' . $id;
-                    $session->message(sprintf(
+                    $this->warning(sprintf(
                         $this->_('GitSync: update available for "%1$s" on branch "%2$s" – <a href="%3$s">view branches</a>'),
-                        $this->wire('sanitizer')->entities($repo['module_class']),
-                        $this->wire('sanitizer')->entities($repo['current_branch']),
+                        $sanitizer->entities($repo['module_class']),
+                        $sanitizer->entities($repo['current_branch']),
                         $branchesUrl
                     ), Notice::allowMarkup);
                 }
             } catch (\Throwable $e) {
                 $log->save('gitsync', "[auto-check] Check FAILED for {$repo['module_class']}: " . $e->getMessage());
             }
+        }
+
+        if ($dirty) {
+            $this->saveModuleRepos($repos);
         }
     }
 
@@ -499,6 +515,18 @@ class GitSync extends Process {
                 $webhookBadge = ' <span style="background:#1565C0;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px" title="' . $this->_('This module is auto-synced via GitHub webhook') . '"><i class="fa fa-bolt"></i> webhook</span>';
             }
 
+            // Update-available badge: latest seen remote SHA differs from synced SHA
+            $updateBadge = '';
+            $remoteSha = $repo['latest_remote_sha'] ?? '';
+            $localSha = $repo['last_commit_sha'] ?? '';
+            if (!empty($remoteSha) && $remoteSha !== $localSha && empty($repo['webhook_active'])) {
+                $title = $this->_('A newer commit is available on this branch');
+                if (!empty($repo['auto_sync_last_check'])) {
+                    $title .= ' (' . $this->_('last check') . ': ' . wireRelativeTimeStr($repo['auto_sync_last_check']) . ')';
+                }
+                $updateBadge = ' <a href="./branches/?id=' . (int)$id . '" style="background:#FF9800;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;text-decoration:none" title="' . $this->wire('sanitizer')->entities($title) . '"><i class="fa fa-arrow-up"></i> ' . $this->_('update available') . '</a>';
+            }
+
             $actions = sprintf(
                 '<a href="./branches/?id=%d" class="pw-panel-links"><i class="fa fa-code-fork"></i> %s</a> &nbsp; ',
                 $id, $this->_('Branches')
@@ -552,7 +580,7 @@ class GitSync extends Process {
             $table->row([
                 "<a href='{$moduleEditUrl}'><strong>{$sanitizer->entities($repo['module_class'])}</strong></a>",
                 "<a href='{$repoUrl}' target='_blank'>{$sanitizer->entities($repo['owner'])}/{$sanitizer->entities($repo['repo'])}</a>",
-                $sanitizer->entities($branchLabel) . $webhookBadge,
+                $sanitizer->entities($branchLabel) . $webhookBadge . $updateBadge,
                 $lastSynced,
                 $autoSyncCell,
                 $actions,
