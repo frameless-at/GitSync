@@ -540,15 +540,15 @@ class GitSync extends Process {
             $currentMode = $repo['auto_sync_mode'] ?? 'off';
             $disableReason = '';
             if ($repo['module_class'] === 'GitSync') {
-                $disableReason = $this->_('Self-update only manual');
+                $disableReason = $this->_('only manual');
             } elseif (!empty($repo['webhook_active'])) {
-                $disableReason = $this->_('Webhook active');
+                $disableReason = $this->_('Webhook');
             } elseif (empty($repo['current_branch'])) {
                 $disableReason = $this->_('No branch selected');
             }
 
             if ($disableReason) {
-                $autoSyncCell = "<span class='uk-text-muted'>—</span> <small class='uk-text-muted'>{$sanitizer->entities($disableReason)}</small>";
+                $autoSyncCell = "<small class='uk-text-muted'>{$sanitizer->entities($disableReason)}</small>";
             } else {
                 $options = [
                     'off' => $this->_('off'),
@@ -639,14 +639,16 @@ class GitSync extends Process {
         $out .= '<p class="uk-text-right"><button class="uk-button uk-button-default uk-modal-close" type="button">' . $this->_('Close') . '</button></p>';
         $out .= '</div></div>';
 
-        // Rate limit info
+        // Rate limit info + last sync duration
         $rateLimit = $this->getGitHub()->getRateLimit();
         if ($rateLimit['remaining'] !== null) {
-            $out .= "<p class='uk-text-small uk-text-muted'>" . sprintf(
+            $line = sprintf(
                 $this->_('GitHub API: %d requests remaining (resets %s)'),
                 $rateLimit['remaining'],
                 $rateLimit['reset'] ? wireRelativeTimeStr($rateLimit['reset']) : '-'
-            ) . "</p>";
+            );
+            $line .= $this->renderLastSyncSuffix();
+            $out .= "<p class='uk-text-small uk-text-muted'>" . $line . "</p>";
         }
 
         return $out;
@@ -1228,13 +1230,15 @@ class GitSync extends Process {
 
         $out = $table->render();
 
-        // Rate limit info
+        // Rate limit info + last sync duration
         $rateLimit = $this->getGitHub()->getRateLimit();
         if ($rateLimit['remaining'] !== null) {
-            $out .= "<p class='uk-text-small uk-text-muted'>" . sprintf(
+            $line = sprintf(
                 $this->_('GitHub API: %d requests remaining'),
                 $rateLimit['remaining']
-            ) . "</p>";
+            );
+            $line .= $this->renderLastSyncSuffix();
+            $out .= "<p class='uk-text-small uk-text-muted'>" . $line . "</p>";
         }
 
         return $out;
@@ -1315,6 +1319,7 @@ class GitSync extends Process {
      * @throws GitSyncException
      */
     public function performSync(int $id, array $repo, string $branch, string $source = 'manual'): array {
+        $startTime = microtime(true);
         $moduleClass = $repo['module_class'];
         $targetDir = $this->wire('config')->paths->siteModules . $moduleClass . '/';
 
@@ -1375,6 +1380,7 @@ class GitSync extends Process {
             if ($source === 'webhook') $repos[$id]['webhook_active'] = true;
             $this->saveModuleRepos($repos);
 
+            $this->recordSyncDuration($moduleClass, microtime(true) - $startTime);
             return ['status' => 'up_to_date', 'updated' => 0, 'deleted' => 0, 'sha' => substr($branchInfo['sha'], 0, 7)];
         }
 
@@ -1438,12 +1444,51 @@ class GitSync extends Process {
             $source, $moduleClass, $branch, substr($branchInfo['sha'], 0, 7), $updated, $deleted
         ));
 
+        $this->recordSyncDuration($moduleClass, microtime(true) - $startTime);
+
         return [
             'status' => 'synced',
             'updated' => $updated,
             'deleted' => $deleted,
             'sha' => substr($branchInfo['sha'], 0, 7),
         ];
+    }
+
+    /**
+     * Stash the duration of the most recent sync in the session so the next page
+     * render can show it next to the API rate-limit info.
+     */
+    protected function recordSyncDuration(string $moduleClass, float $seconds): void {
+        $this->wire('session')->set('GitSync_lastSync', [
+            'module' => $moduleClass,
+            'duration' => $seconds,
+        ]);
+    }
+
+    /**
+     * Format a duration in seconds for display (e.g. "0.8s", "12.4s", "2m 18s").
+     */
+    protected function formatDuration(float $seconds): string {
+        if ($seconds < 60) {
+            return number_format($seconds, 1) . 's';
+        }
+        $m = (int) floor($seconds / 60);
+        $s = (int) round($seconds - $m * 60);
+        return "{$m}m {$s}s";
+    }
+
+    /**
+     * Suffix appended to the rate-limit footer with the most recent sync's duration.
+     * Returns "" when no sync has happened in the current session.
+     */
+    protected function renderLastSyncSuffix(): string {
+        $last = $this->wire('session')->get('GitSync_lastSync');
+        if (!is_array($last) || empty($last['duration'])) return '';
+        return ' &middot; ' . sprintf(
+            $this->_('Last sync (%1$s): %2$s'),
+            $this->wire('sanitizer')->entities($last['module'] ?? ''),
+            $this->formatDuration((float) $last['duration'])
+        );
     }
 
     // =========================================================================
