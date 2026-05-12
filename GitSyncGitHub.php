@@ -20,6 +20,9 @@ class GitSyncGitHub {
     /** @var int Unix timestamp when rate limit resets */
     protected $rateLimitReset = null;
 
+    /** @var \CurlHandle|null Persistent curl handle reused across api.github.com calls for HTTP keep-alive */
+    protected $apiHandle = null;
+
     /**
      * @param string $token GitHub personal access token (optional, required for private repos)
      */
@@ -65,7 +68,52 @@ class GitSyncGitHub {
     }
 
     /**
-     * Create a cURL handle with shared defaults (rate-limit header parsing, timeouts, user-agent)
+     * Lazily create the persistent curl handle used for all api.github.com calls.
+     *
+     * Reusing one handle means TLS is negotiated once instead of once per request.
+     * HTTP/2 is requested via ALPN; curl falls back to HTTP/1.1 keep-alive on hosts
+     * (or build configurations) that don't support it.
+     */
+    protected function getApiHandle() {
+        if ($this->apiHandle === null) {
+            $this->apiHandle = curl_init();
+            curl_setopt_array($this->apiHandle, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_USERAGENT => 'GitSync-ProcessWire/0.1',
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2_0,
+                CURLOPT_HEADERFUNCTION => function ($ch, $header) {
+                    $this->parseRateLimitHeader($header);
+                    return strlen($header);
+                },
+            ]);
+        }
+        return $this->apiHandle;
+    }
+
+    /**
+     * Execute a request on the shared persistent handle.
+     *
+     * @return array ['response' => string|false, 'httpCode' => int, 'error' => string]
+     */
+    protected function execApi(string $url, array $headers = []): array {
+        $ch = $this->getApiHandle();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers ?: $this->buildHeaders());
+
+        $response = curl_exec($ch);
+        return [
+            'response' => $response,
+            'httpCode' => (int) curl_getinfo($ch, CURLINFO_HTTP_CODE),
+            'error' => curl_error($ch),
+        ];
+    }
+
+    /**
+     * Create a one-off cURL handle for requests that need streaming or non-standard
+     * options (e.g. ZIP archive download). Not reused across calls.
      *
      * @param string $url Request URL
      * @param array $headers Custom headers (default: buildHeaders())
@@ -81,6 +129,7 @@ class GitSyncGitHub {
             CURLOPT_TIMEOUT => 30,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_USERAGENT => 'GitSync-ProcessWire/0.1',
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2_0,
             CURLOPT_HTTPHEADER => $headers ?: $this->buildHeaders(),
             CURLOPT_HEADERFUNCTION => function ($ch, $header) {
                 $this->parseRateLimitHeader($header);
@@ -108,11 +157,10 @@ class GitSyncGitHub {
      * @throws GitSyncException
      */
     protected function apiRequest(string $url): array {
-        $ch = $this->buildCurlHandle($url);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
+        $result = $this->execApi($url);
+        $response = $result['response'];
+        $httpCode = $result['httpCode'];
+        $error = $result['error'];
 
         if ($response === false) {
             throw new GitSyncException("GitHub API request failed: {$error}");
@@ -152,14 +200,11 @@ class GitSyncGitHub {
      * @return array ['status' => int, 'data' => array|null]
      */
     public function apiRequestRaw(string $url): array {
-        $ch = $this->buildCurlHandle($url);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $result = $this->execApi($url);
 
         return [
-            'status' => (int) $httpCode,
-            'data' => ($response !== false) ? json_decode($response, true) : null,
+            'status' => $result['httpCode'],
+            'data' => ($result['response'] !== false) ? json_decode($result['response'], true) : null,
         ];
     }
 
@@ -324,20 +369,17 @@ class GitSyncGitHub {
             $headers[] = "Authorization: Bearer {$this->token}";
         }
 
-        $ch = $this->buildCurlHandle($url, $headers);
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
+        $result = $this->execApi($url, $headers);
 
-        if ($response === false) {
-            throw new GitSyncException("Failed to download blob {$sha}: {$error}");
+        if ($result['response'] === false) {
+            throw new GitSyncException("Failed to download blob {$sha}: {$result['error']}");
         }
 
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw new GitSyncException("GitHub returned HTTP {$httpCode} when downloading blob {$sha}");
+        if ($result['httpCode'] < 200 || $result['httpCode'] >= 300) {
+            throw new GitSyncException("GitHub returned HTTP {$result['httpCode']} when downloading blob {$sha}");
         }
 
-        return $response;
+        return $result['response'];
     }
 
     /**
