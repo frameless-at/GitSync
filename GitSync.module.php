@@ -251,14 +251,14 @@ class GitSync extends Process {
                             $repos[$id]['latest_remote_sha'] = $remoteSha;
                             $repos[$id]['auto_sync_last_check'] = date('c');
                             $this->message(sprintf(
-                                $this->_('GitSync: auto-synced "%1$s" to branch "%2$s" (commit %3$s) – %4$d updated, %5$d deleted.'),
+                                $this->_('Auto-synced "%1$s" to branch "%2$s" (commit %3$s) – %4$d updated, %5$d deleted.'),
                                 $repo['module_class'], $repo['current_branch'], $result['sha'],
                                 $result['updated'], $result['deleted']
                             ));
                         }
                     } catch (\Throwable $e) {
                         $this->error(sprintf(
-                            $this->_('GitSync: auto-sync failed for "%1$s": %2$s'),
+                            $this->_('Auto-sync failed for "%1$s": %2$s'),
                             $repo['module_class'], $e->getMessage()
                         ));
                         $log->save('gitsync', "[auto-check] Sync FAILED for {$repo['module_class']}: " . $e->getMessage());
@@ -266,11 +266,9 @@ class GitSync extends Process {
                 } else {
                     $branchesUrl = $adminUrl . 'setup/gitsync/branches/?id=' . $id;
                     $this->warning(sprintf(
-                        $this->_('GitSync: update available for "%1$s" on branch "%2$s" – <a href="%3$s">view branches</a>'),
-                        $sanitizer->entities($repo['module_class']),
-                        $sanitizer->entities($repo['current_branch']),
-                        $branchesUrl
-                    ), Notice::allowMarkup);
+                        $this->_('Update available for "%1$s" on branch "%2$s" – [view branches](%3$s)'),
+                        $repo['module_class'], $repo['current_branch'], $branchesUrl
+                    ), Notice::allowMarkdown);
                 }
             } catch (\Throwable $e) {
                 $log->save('gitsync', "[auto-check] Check FAILED for {$repo['module_class']}: " . $e->getMessage());
