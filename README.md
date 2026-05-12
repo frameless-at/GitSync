@@ -9,6 +9,7 @@ ProcessWire module that synchronizes installed modules with GitHub repository br
 - **Differential sync** – Compares git blob SHAs to detect changes, only downloads modified files
 - **Branch-level control** – List all branches, sync any of them with one click
 - **GitHub Webhook support** – Automatic sync on every push, no browser tab required
+- **Auto-check on admin login** – For repos without a webhook, optionally notify or auto-sync when a new commit is detected upstream
 - **Install from GitHub** – Install new modules directly from a GitHub URL (public and private repos)
 - **No git required** – Uses the GitHub REST API exclusively, no git binary needed on the server
 - **Update detection** – Shows whether the synced branch is up to date or has new commits
@@ -82,6 +83,25 @@ On the same page, expand **Install new module from GitHub** and paste the reposi
 Click **Branches** next to a linked module to see all available branches with their latest commit SHA and date. The status badge shows **up to date** or **updates available** for the active branch.
 
 ![Branch List](screenshots/branches.png)
+
+### Auto-Sync on admin login
+
+For repos you don't own (and therefore can't add a webhook to), GitSync can check for upstream updates automatically on the first admin page load per session.
+
+Each linked module has an **Auto-Sync** column in the overview with three modes:
+
+- **off** *(default)* – manual sync only
+- **notify** – check for new commits and show a warning notice with a link to the branches view
+- **auto-sync** – check and sync immediately without confirmation
+
+When an update is detected, an orange **update available** badge stays on the GitSync overview next to the affected module, even after the notice is dismissed.
+
+Notes:
+
+- The check runs **once per session**, not on every page load.
+- Mappings with an active webhook are skipped (the webhook handles it).
+- GitSync itself is excluded from auto-sync – self-updates remain manual to avoid mid-request fatal errors.
+- Without a GitHub token you have 60 API requests/hour total. Use auto-sync sparingly when linking many public repos, or configure a token to raise the limit to 5,000/hour.
 
 ### Sync a branch
 
