@@ -153,7 +153,7 @@ GitSync/
 ## Limitations
 
 - Very large repositories (100k+ files where GitHub truncates the tree response) are not supported for differential sync.
-- Local files that are not in the remote branch are deleted on sync, **unless** they match a pattern in the repository's root `.gitignore` (so runtime artefacts like `logs/`, `dumps/`, `bluescreen/` are preserved). The matcher covers the common cases — directory patterns, wildcards, literal names — but not the full gitignore spec (no negation, no `**`).
+- Files matching the repository's root `.gitignore` (runtime artefacts like `logs/`, `dumps/`, `bluescreen/`) or marked `export-ignore` in `.gitattributes` (typically `docs/`, `.github/`, the `.gitattributes` file itself — i.e. files the maintainer excludes from `git archive`) are **never added, never deleted**: GitSync treats them as not part of the deployable surface. Local files outside both lists that no longer exist remotely are deleted on sync. The pattern matcher covers directory patterns, wildcards, and literal names — not the full gitignore spec (no negation, no `**`).
 - Small diffs use one API request per changed file. Diffs larger than 50 files automatically switch to a single ZIP archive download via GitHub's `/zipball` endpoint, which keeps large syncs fast and avoids the API rate limit for downloads.
 - Self-updating (syncing GitSync itself) works but may require a page reload.
 

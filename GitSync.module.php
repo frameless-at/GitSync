@@ -1353,40 +1353,53 @@ class GitSync extends Process {
         // 4. Build map of local files: path => git blob sha
         $localFiles = is_dir($targetDir) ? $this->buildLocalFileMap($targetDir) : [];
 
-        // 5. Determine changes
+        // 5. Determine changes — but first collect "preserve" patterns from the remote
+        // repo. We combine two sources, both gitignore-syntax:
+        //   - .gitignore   → files git intentionally doesn't track (runtime artefacts
+        //                    like logs/, dumps/, bluescreen/ that some modules drop
+        //                    inside their own folder)
+        //   - .gitattributes `export-ignore` → files the maintainer marks as
+        //                    not-for-distribution (docs/, .github/, .gitattributes
+        //                    itself). These are in the tree but excluded from
+        //                    `git archive`, which is exactly what should NOT land
+        //                    on a live PW install either.
+        // Paths matching either are skipped both ways: not added, not deleted.
+        $preservePatterns = array_merge(
+            $this->loadRemoteGitignore($github, $repo['owner'], $repo['repo'], $remoteTree),
+            $this->loadRemoteExportIgnore($github, $repo['owner'], $repo['repo'], $remoteTree)
+        );
+
         $toUpdate = [];
         $toDelete = [];
+        $preservedFromAdd = 0;
+        $preservedFromDelete = 0;
 
         foreach ($remoteFiles as $path => $sha) {
             if (!isset($localFiles[$path]) || $localFiles[$path] !== $sha) {
+                if (!empty($preservePatterns) && $this->pathMatchesPattern($path, $preservePatterns)) {
+                    $preservedFromAdd++;
+                    continue;
+                }
                 $toUpdate[$path] = $sha;
             }
         }
 
         foreach ($localFiles as $path => $sha) {
             if (!isset($remoteFiles[$path])) {
+                if (!empty($preservePatterns) && $this->pathMatchesPattern($path, $preservePatterns)) {
+                    $preservedFromDelete++;
+                    continue;
+                }
                 $toDelete[] = $path;
             }
         }
 
-        // 5b. Filter toDelete via remote .gitignore. Some modules (e.g. TracyDebugger)
-        // store runtime artefacts inside their own directory — those would otherwise
-        // be wiped on every sync because they're not in the remote tree.
-        $preserved = 0;
-        $gitignorePatterns = $this->loadRemoteGitignore($github, $repo['owner'], $repo['repo'], $remoteTree);
-        if (!empty($gitignorePatterns)) {
-            $beforeCount = count($toDelete);
-            $toDelete = array_values(array_filter($toDelete, function ($path) use ($gitignorePatterns) {
-                return !$this->pathMatchesGitignore($path, $gitignorePatterns);
-            }));
-            $preserved = $beforeCount - count($toDelete);
-        }
-
+        $preserved = $preservedFromAdd + $preservedFromDelete;
         $this->wire('log')->save('gitsync', sprintf(
             '[%s] Sync "%s" branch "%s": %d remote, %d local, %d to update, %d to delete%s',
             $source, $moduleClass, $branch, count($remoteFiles), count($localFiles),
             count($toUpdate), count($toDelete),
-            $preserved > 0 ? " ({$preserved} preserved via .gitignore)" : ''
+            $preserved > 0 ? " ({$preserved} preserved via .gitignore/.gitattributes)" : ''
         ));
 
         // 6. Nothing to do?
@@ -1431,26 +1444,18 @@ class GitSync extends Process {
                     $this->wire('files')->mkdir($fileDir, true);
                 }
 
-                $usedBlob = false;
                 if ($zipExtracted !== null) {
                     $src = $zipExtracted['root'] . $path;
-                    if (is_file($src)) {
-                        if (!@copy($src, $filePath)) {
-                            throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
-                        }
-                        $size = (int) filesize($filePath);
-                    } else {
-                        // Tree entry not in archive — typically the maintainer marked
-                        // it `export-ignore` in .gitattributes (e.g. .gitattributes
-                        // itself, docs/, .github/). Fetch via blob API to keep local
-                        // tree-consistent.
-                        $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
-                        if (file_put_contents($filePath, $content) === false) {
-                            throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
-                        }
-                        $size = strlen($content);
-                        $usedBlob = true;
+                    if (!is_file($src)) {
+                        // Should not happen: export-ignored files are filtered out
+                        // earlier. If we hit this it's an unexpected archive/tree
+                        // mismatch — surface it explicitly rather than silently skip.
+                        throw new GitSyncException("File missing from archive: {$path}");
                     }
+                    if (!@copy($src, $filePath)) {
+                        throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                    }
+                    $size = (int) filesize($filePath);
                 } else {
                     $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
                     if (file_put_contents($filePath, $content) === false) {
@@ -1459,10 +1464,7 @@ class GitSync extends Process {
                     $size = strlen($content);
                 }
 
-                $this->wire('log')->save('gitsync', sprintf(
-                    '  Updated: %s (%d bytes)%s',
-                    $path, $size, $usedBlob ? ' [blob fallback: export-ignore]' : ''
-                ));
+                $this->wire('log')->save('gitsync', sprintf('  Updated: %s (%d bytes)', $path, $size));
                 $updated++;
             }
         } finally {
@@ -1669,15 +1671,55 @@ class GitSync extends Process {
     }
 
     /**
-     * Best-effort match of a relative path against parsed gitignore patterns.
-     *
-     * Covers the common cases real-world module .gitignores use: directory
-     * patterns (`logs/`), wildcards (`*.log`), and literal filenames. Does NOT
-     * implement the full spec — negation (`!`), `**`, and root-anchored paths
-     * are out of scope. Conservative: when in doubt, treats path as NOT matching
-     * (so deletion proceeds), which preserves the pre-fix behaviour.
+     * Fetch and parse `.gitattributes`, returning the patterns marked
+     * `export-ignore`. These are explicitly excluded from `git archive` output
+     * — for our purposes "don't deploy this to live", so we treat them like
+     * .gitignore entries: never add, never delete.
      */
-    protected function pathMatchesGitignore(string $path, array $patterns): bool {
+    protected function loadRemoteExportIgnore(GitSyncGitHub $github, string $owner, string $repo, array $remoteTree): array {
+        foreach ($remoteTree as $entry) {
+            if ($entry['type'] === 'blob' && $entry['path'] === '.gitattributes') {
+                try {
+                    $content = $github->downloadBlob($owner, $repo, $entry['sha']);
+                } catch (\Throwable $e) {
+                    return [];
+                }
+                return $this->parseExportIgnorePatterns($content);
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Parse `.gitattributes` lines, returning patterns that carry the
+     * `export-ignore` attribute. Format: `<pattern> <attr1> <attr2> ...`.
+     */
+    protected function parseExportIgnorePatterns(string $content): array {
+        $patterns = [];
+        foreach (explode("\n", str_replace("\r\n", "\n", $content)) as $line) {
+            $line = trim($line);
+            if ($line === '' || $line[0] === '#') continue;
+            $tokens = preg_split('/\s+/', $line);
+            if (count($tokens) < 2) continue;
+            $pattern = array_shift($tokens);
+            if (in_array('export-ignore', $tokens, true)) {
+                $patterns[] = $pattern;
+            }
+        }
+        return $patterns;
+    }
+
+    /**
+     * Best-effort match of a relative path against gitignore-syntax patterns
+     * (which is also the syntax used by .gitattributes pattern columns).
+     *
+     * Covers the common cases real-world repos use: directory patterns
+     * (`logs/`, `docs/`), wildcards (`*.log`), multi-segment literal paths,
+     * and bare filenames. Does NOT implement the full gitignore spec —
+     * negation (`!`), `**`, and root-anchored paths are out of scope.
+     * Conservative: when in doubt, treats path as NOT matching.
+     */
+    protected function pathMatchesPattern(string $path, array $patterns): bool {
         if (empty($patterns)) return false;
         $segments = explode('/', $path);
         $basename = end($segments);
