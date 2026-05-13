@@ -1431,15 +1431,26 @@ class GitSync extends Process {
                     $this->wire('files')->mkdir($fileDir, true);
                 }
 
+                $usedBlob = false;
                 if ($zipExtracted !== null) {
                     $src = $zipExtracted['root'] . $path;
-                    if (!is_file($src)) {
-                        throw new GitSyncException("File missing from archive: {$path}");
+                    if (is_file($src)) {
+                        if (!@copy($src, $filePath)) {
+                            throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                        }
+                        $size = (int) filesize($filePath);
+                    } else {
+                        // Tree entry not in archive — typically the maintainer marked
+                        // it `export-ignore` in .gitattributes (e.g. .gitattributes
+                        // itself, docs/, .github/). Fetch via blob API to keep local
+                        // tree-consistent.
+                        $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
+                        if (file_put_contents($filePath, $content) === false) {
+                            throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                        }
+                        $size = strlen($content);
+                        $usedBlob = true;
                     }
-                    if (!@copy($src, $filePath)) {
-                        throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
-                    }
-                    $size = (int) filesize($filePath);
                 } else {
                     $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
                     if (file_put_contents($filePath, $content) === false) {
@@ -1448,7 +1459,10 @@ class GitSync extends Process {
                     $size = strlen($content);
                 }
 
-                $this->wire('log')->save('gitsync', sprintf('  Updated: %s (%d bytes)', $path, $size));
+                $this->wire('log')->save('gitsync', sprintf(
+                    '  Updated: %s (%d bytes)%s',
+                    $path, $size, $usedBlob ? ' [blob fallback: export-ignore]' : ''
+                ));
                 $updated++;
             }
         } finally {
