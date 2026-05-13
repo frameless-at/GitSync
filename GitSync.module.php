@@ -1320,6 +1320,10 @@ class GitSync extends Process {
      */
     public function performSync(int $id, array $repo, string $branch, string $source = 'manual'): array {
         $startTime = microtime(true);
+        // Large module syncs (e.g. 1000+ files) can exceed PHP's default
+        // max_execution_time and die with a 500. Lift it for this request.
+        @set_time_limit(0);
+
         $moduleClass = $repo['module_class'];
         $targetDir = $this->wire('config')->paths->siteModules . $moduleClass . '/';
 
@@ -1365,10 +1369,24 @@ class GitSync extends Process {
             }
         }
 
+        // 5b. Filter toDelete via remote .gitignore. Some modules (e.g. TracyDebugger)
+        // store runtime artefacts inside their own directory — those would otherwise
+        // be wiped on every sync because they're not in the remote tree.
+        $preserved = 0;
+        $gitignorePatterns = $this->loadRemoteGitignore($github, $repo['owner'], $repo['repo'], $remoteTree);
+        if (!empty($gitignorePatterns)) {
+            $beforeCount = count($toDelete);
+            $toDelete = array_values(array_filter($toDelete, function ($path) use ($gitignorePatterns) {
+                return !$this->pathMatchesGitignore($path, $gitignorePatterns);
+            }));
+            $preserved = $beforeCount - count($toDelete);
+        }
+
         $this->wire('log')->save('gitsync', sprintf(
-            '[%s] Sync "%s" branch "%s": %d remote, %d local, %d to update, %d to delete',
+            '[%s] Sync "%s" branch "%s": %d remote, %d local, %d to update, %d to delete%s',
             $source, $moduleClass, $branch, count($remoteFiles), count($localFiles),
-            count($toUpdate), count($toDelete)
+            count($toUpdate), count($toDelete),
+            $preserved > 0 ? " ({$preserved} preserved via .gitignore)" : ''
         ));
 
         // 6. Nothing to do?
@@ -1389,24 +1407,54 @@ class GitSync extends Process {
             $this->wire('files')->mkdir($targetDir, true);
         }
 
-        // 8. Download changed files and write them
-        $updated = 0;
-        foreach ($toUpdate as $path => $sha) {
-            $filePath = $targetDir . $path;
-            $fileDir = dirname($filePath);
-
-            if (!is_dir($fileDir)) {
-                $this->wire('files')->mkdir($fileDir, true);
+        // 8. Download changed files. For large diffs, fetch the whole branch as a ZIP
+        // once and copy from the extracted archive — turns 1000+ sequential API calls
+        // into a single download. Threshold is conservative so small diffs keep using
+        // the direct path and don't pay the ZIP overhead (~1–3s fixed cost).
+        $zipExtracted = null;
+        $ZIP_THRESHOLD = 50;
+        try {
+            if (count($toUpdate) > $ZIP_THRESHOLD) {
+                $zipExtracted = $this->fetchZipballToTemp($github, $repo['owner'], $repo['repo'], $branch);
+                $this->wire('log')->save('gitsync', sprintf(
+                    '  Using ZIP archive for %d file update(s) (>%d threshold)',
+                    count($toUpdate), $ZIP_THRESHOLD
+                ));
             }
 
-            $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
+            $updated = 0;
+            foreach ($toUpdate as $path => $sha) {
+                $filePath = $targetDir . $path;
+                $fileDir = dirname($filePath);
 
-            if (file_put_contents($filePath, $content) === false) {
-                throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                if (!is_dir($fileDir)) {
+                    $this->wire('files')->mkdir($fileDir, true);
+                }
+
+                if ($zipExtracted !== null) {
+                    $src = $zipExtracted['root'] . $path;
+                    if (!is_file($src)) {
+                        throw new GitSyncException("File missing from archive: {$path}");
+                    }
+                    if (!@copy($src, $filePath)) {
+                        throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                    }
+                    $size = (int) filesize($filePath);
+                } else {
+                    $content = $this->getGitHub()->downloadBlob($repo['owner'], $repo['repo'], $sha);
+                    if (file_put_contents($filePath, $content) === false) {
+                        throw new GitSyncException("Cannot write file: {$path} – check directory permissions (need 770)");
+                    }
+                    $size = strlen($content);
+                }
+
+                $this->wire('log')->save('gitsync', sprintf('  Updated: %s (%d bytes)', $path, $size));
+                $updated++;
             }
-
-            $this->wire('log')->save('gitsync', sprintf('  Updated: %s (%d bytes)', $path, strlen($content)));
-            $updated++;
+        } finally {
+            if ($zipExtracted !== null && is_dir($zipExtracted['tempDir'])) {
+                wireRmdir($zipExtracted['tempDir'], true);
+            }
         }
 
         // 9. Delete files that no longer exist remotely
@@ -1506,11 +1554,42 @@ class GitSync extends Process {
      * @throws GitSyncException
      */
     protected function downloadAndExtractZipball(GitSyncGitHub $github, string $owner, string $repo, string $branch, string $targetDir): int {
+        $extracted = $this->fetchZipballToTemp($github, $owner, $repo, $branch);
+        try {
+            if (!rename(rtrim($extracted['root'], '/'), rtrim($targetDir, '/'))) {
+                throw new GitSyncException("Failed to move extracted module into {$targetDir}");
+            }
+
+            $count = 0;
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($targetDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::LEAVES_ONLY
+            );
+            foreach ($iterator as $file) {
+                if ($file->isFile()) $count++;
+            }
+            return $count;
+        } finally {
+            if (is_dir($extracted['tempDir'])) wireRmdir($extracted['tempDir'], true);
+        }
+    }
+
+    /**
+     * Download a branch as a ZIP into a temporary directory and extract it.
+     *
+     * Returns ['root' => path to the wrapper-stripped content, 'tempDir' => the
+     * parent temp directory the caller is responsible for cleaning up].
+     *
+     * The caller must wireRmdir($tempDir, true) when done (try/finally).
+     *
+     * @throws GitSyncException
+     */
+    protected function fetchZipballToTemp(GitSyncGitHub $github, string $owner, string $repo, string $branch): array {
         $cachePath = $this->wire('config')->paths->cache . 'GitSync/';
         if (!is_dir($cachePath)) {
             $this->wire('files')->mkdir($cachePath, true);
         }
-        $tempDir = $cachePath . 'install-' . uniqid('', true) . '/';
+        $tempDir = $cachePath . 'archive-' . uniqid('', true) . '/';
         $this->wire('files')->mkdir($tempDir, true);
         $zipFile = $tempDir . 'archive.zip';
 
@@ -1528,28 +1607,102 @@ class GitSync extends Process {
             $first = trim($files[0], '/');
             $slashPos = strpos($first, '/');
             $wrapper = $slashPos !== false ? substr($first, 0, $slashPos) : $first;
-            $wrapperPath = $tempDir . $wrapper;
-            if (!is_dir($wrapperPath)) {
+            $root = rtrim($tempDir . $wrapper, '/') . '/';
+            if (!is_dir($root)) {
                 throw new GitSyncException('Unexpected archive layout: top-level directory not found.');
             }
 
-            if (!rename($wrapperPath, rtrim($targetDir, '/'))) {
-                throw new GitSyncException("Failed to move extracted module into {$targetDir}");
-            }
-
-            $count = 0;
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($targetDir, \RecursiveDirectoryIterator::SKIP_DOTS),
-                \RecursiveIteratorIterator::LEAVES_ONLY
-            );
-            foreach ($iterator as $file) {
-                if ($file->isFile()) $count++;
-            }
-            return $count;
+            return ['root' => $root, 'tempDir' => $tempDir];
+        } catch (\Throwable $e) {
+            if (is_dir($tempDir)) wireRmdir($tempDir, true);
+            throw $e;
         } finally {
             if (is_file($zipFile)) @unlink($zipFile);
-            if (is_dir($tempDir)) wireRmdir($tempDir, true);
         }
+    }
+
+    /**
+     * Fetch and parse the repository's root .gitignore. Returns [] if there is no
+     * .gitignore in the remote tree (or it can't be downloaded — we never block
+     * a sync on this; the worst case is "no preservation, behave as before").
+     */
+    protected function loadRemoteGitignore(GitSyncGitHub $github, string $owner, string $repo, array $remoteTree): array {
+        foreach ($remoteTree as $entry) {
+            if ($entry['type'] === 'blob' && $entry['path'] === '.gitignore') {
+                try {
+                    $content = $github->downloadBlob($owner, $repo, $entry['sha']);
+                } catch (\Throwable $e) {
+                    return [];
+                }
+                return $this->parseGitignorePatterns($content);
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Parse a .gitignore body into a flat array of patterns. Skips comments,
+     * blank lines, and negation patterns (! — not supported by the matcher).
+     */
+    protected function parseGitignorePatterns(string $content): array {
+        $patterns = [];
+        foreach (explode("\n", str_replace("\r\n", "\n", $content)) as $line) {
+            $line = trim($line);
+            if ($line === '' || $line[0] === '#' || $line[0] === '!') continue;
+            $patterns[] = $line;
+        }
+        return $patterns;
+    }
+
+    /**
+     * Best-effort match of a relative path against parsed gitignore patterns.
+     *
+     * Covers the common cases real-world module .gitignores use: directory
+     * patterns (`logs/`), wildcards (`*.log`), and literal filenames. Does NOT
+     * implement the full spec — negation (`!`), `**`, and root-anchored paths
+     * are out of scope. Conservative: when in doubt, treats path as NOT matching
+     * (so deletion proceeds), which preserves the pre-fix behaviour.
+     */
+    protected function pathMatchesGitignore(string $path, array $patterns): bool {
+        if (empty($patterns)) return false;
+        $segments = explode('/', $path);
+        $basename = end($segments);
+
+        foreach ($patterns as $pattern) {
+            $isDirOnly = substr($pattern, -1) === '/';
+            $clean = trim($pattern, '/');
+            if ($clean === '') continue;
+            $hasWildcard = strpbrk($clean, '*?[') !== false;
+            $isMultiSegment = strpos($clean, '/') !== false;
+
+            if ($hasWildcard) {
+                if (fnmatch($clean, $basename)) return true;
+                if (fnmatch($clean, $path)) return true;
+                continue;
+            }
+
+            if ($isMultiSegment) {
+                if ($isDirOnly) {
+                    if (strpos($path, $clean . '/') === 0) return true;
+                } else {
+                    if ($path === $clean || strpos($path, $clean . '/') === 0) return true;
+                }
+                continue;
+            }
+
+            if ($isDirOnly) {
+                // Single-segment directory pattern: match any non-leaf path component
+                for ($i = 0, $n = count($segments); $i < $n - 1; $i++) {
+                    if ($segments[$i] === $clean) return true;
+                }
+            } else {
+                // Single-segment file pattern: match any path component
+                foreach ($segments as $seg) {
+                    if ($seg === $clean) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

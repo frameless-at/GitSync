@@ -153,8 +153,8 @@ GitSync/
 ## Limitations
 
 - Very large repositories (100k+ files where GitHub truncates the tree response) are not supported for differential sync.
-- Files that exist locally but not in the remote branch are deleted during sync. Don't store runtime-generated files inside module directories.
-- Each changed file requires one API request. Syncing many changes consumes more API quota.
+- Local files that are not in the remote branch are deleted on sync, **unless** they match a pattern in the repository's root `.gitignore` (so runtime artefacts like `logs/`, `dumps/`, `bluescreen/` are preserved). The matcher covers the common cases — directory patterns, wildcards, literal names — but not the full gitignore spec (no negation, no `**`).
+- Small diffs use one API request per changed file. Diffs larger than 50 files automatically switch to a single ZIP archive download via GitHub's `/zipball` endpoint, which keeps large syncs fast and avoids the API rate limit for downloads.
 - Self-updating (syncing GitSync itself) works but may require a page reload.
 
 ## License
