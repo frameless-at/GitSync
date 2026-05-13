@@ -1773,7 +1773,14 @@ class GitSync extends Process {
      */
     protected function buildLocalFileMap(string $dir): array {
         $map = [];
-        $dir = rtrim($dir, '/') . '/';
+        // Normalize the directory prefix to forward slashes — on Windows the
+        // caller passes a POSIX-style path from PW ($config->paths->siteModules),
+        // but SplFileInfo::getPathname() returns backslash paths. Without this
+        // normalization the substr below produces mixed-separator relative paths
+        // that never match remote tree keys ("panels\foo.php" vs "panels/foo.php"),
+        // making every subdirectory file look both new AND deleted at once.
+        $dir = rtrim(str_replace('\\', '/', $dir), '/') . '/';
+        $dirLen = strlen($dir);
 
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
@@ -1783,8 +1790,8 @@ class GitSync extends Process {
         foreach ($iterator as $file) {
             if (!$file->isFile()) continue;
 
-            $fullPath = $file->getPathname();
-            $relativePath = substr($fullPath, strlen($dir));
+            $fullPath = str_replace('\\', '/', $file->getPathname());
+            $relativePath = substr($fullPath, $dirLen);
 
             // Compute git blob SHA: sha1("blob {filesize}\0{content}")
             $content = file_get_contents($fullPath);
